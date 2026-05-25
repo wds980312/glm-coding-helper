@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GLM Coding Helper
 // @namespace    http://tampermonkey.net/
-// @version      8.5
+// @version      8.6
 // @description  GLM Coding Plan helper with local CAPTCHA OCR backend integration
 // @author       mumumi
 // @include      https://*bigmodel.cn/glm-coding*
@@ -237,7 +237,7 @@
         PACKAGES_PRIORITY : '2,3,1',
         CHECK_INTERVAL    : 80,
         SMART_REFRESH     : true,
-        AUTO_CLOSE_INVALID: true,
+        AUTO_CLOSE_INVALID: false,
         AUTO_CLICK_SUB    : true,
     };
  
@@ -591,8 +591,8 @@
                 </label>
                 <label style="display:flex;align-items:center;cursor:pointer">
                     <input type="checkbox" id="glm-aci" ${CFG.AUTO_CLOSE_INVALID ? 'checked' : ''} style="margin-right:8px">
-                    <span style="font-size:14px;color:#555">自动关闭无效弹窗</span>
-                    <span title="开启后自动关闭以下弹窗并重试：&#10;1. 接口返回售罄但前端弹出的支付弹窗（二维码支付链接缺参数，扫码也无法付款）&#10;2. 限流弹窗（自动关闭后继续重试）&#10;关闭后遇到异常弹窗会停脚本，需手动处理" style="margin-left:6px;cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
+                    <span style="font-size:14px;color:#555">自动关闭无效支付/限流弹窗（默认关闭）</span>
+                    <span title="默认关闭，需手动开启才会自动关闭。&#10;开启后自动关闭以下弹窗并重试：&#10;1. 接口返回售罄但前端弹出的支付弹窗（二维码支付链接缺参数，扫码也无法付款）&#10;2. 限流弹窗（自动关闭后继续重试）&#10;关闭后遇到异常弹窗会停脚本，需手动处理" style="margin-left:6px;cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
                 </label>
                 <label style="display:flex;align-items:center;cursor:pointer">
                     <input type="checkbox" id="glm-acs" ${CFG.AUTO_CLICK_SUB ? 'checked' : ''} style="margin-right:8px">
