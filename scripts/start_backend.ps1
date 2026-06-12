@@ -36,22 +36,11 @@ function Test-BackendMainPython {
     param([string]$PythonPath)
     if (-not $PythonPath) { return $false }
     if ($PythonPath -ne "python" -and -not (Test-Path $PythonPath)) { return $false }
-    $OutFile = [System.IO.Path]::GetTempFileName()
-    $ErrFile = [System.IO.Path]::GetTempFileName()
     try {
-        $Proc = Start-Process -FilePath $PythonPath `
-            -ArgumentList @("-c", "import ultralytics, PIL, cv2, numpy") `
-            -NoNewWindow `
-            -Wait `
-            -PassThru `
-            -RedirectStandardOutput $OutFile `
-            -RedirectStandardError $ErrFile
-        return $Proc.ExitCode -eq 0
+        & $PythonPath -c "import ultralytics, PIL, cv2, numpy" *> $null
+        return $LASTEXITCODE -eq 0
     } catch {
         return $false
-    } finally {
-        Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $ErrFile -Force -ErrorAction SilentlyContinue
     }
 }
 
