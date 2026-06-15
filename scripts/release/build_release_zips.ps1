@@ -106,7 +106,7 @@ Recommended:
 Manual:
 - one-click-start.cmd installs the CPU backend environment on first run.
 - start-backend-pipeline-gui.cmd launches the pipeline backend with a Tk GUI window.
-- start-backend.cmd starts CPU backend after environment exists.
+- scripts\start_backend.ps1 starts the backend after environment exists.
 "@
 Set-Content -LiteralPath (Join-Path $OnlineDir "ONLINE_INSTALLER_README.txt") -Value $OnlineGuide -Encoding UTF8
 New-Zip -PackageDir $OnlineDir -ZipPath (Join-Path $OutRoot "$OnlineName.zip")

@@ -1,7 +1,7 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         智谱 GLM Coding Plan 抢购助手 + 本地 OCR 自动验证码
 // @namespace    http://tampermonkey.net/
-// @version      8.19
+// @version      22.2
 // @description  GLM Coding Rush / 智谱 GLM Coding Plan 抢购助手，一键抢购油猴脚本 / Tampermonkey userscript，配合本地 CPU/GPU OCR 自动识别中文点选验证码并点击，支持多窗口并发、限流重试和支付页安全保护
 // @author       mumumi
 // @include      https://*bigmodel.cn/glm-coding*
@@ -508,6 +508,17 @@
         AUTO_CLICK_SUB    : true,
         AUTO_CAPTCHA_CLICK : true,
         AUTO_CAPTCHA_CONFIRM: false,
+        CAPTCHA_CLICK_DELAY_MODE : 'range',
+        CAPTCHA_CLICK_DELAY_MS   : 325,
+        CAPTCHA_CLICK_DELAY_MIN_MS: 250,
+        CAPTCHA_CLICK_DELAY_MAX_MS: 400,
+        CAPTCHA_CLICK_DELAY_JITTER_PERCENT: 20,
+        RUSH_ENABLED        : false,
+        RUSH_TARGET_HOUR    : 9,
+        RUSH_TARGET_MIN     : 59,
+        RUSH_TARGET_SEC     : 58,
+        RUSH_HOLD_WINDOW_MS : 10000,
+        RUSH_RELEASE_ADVANCE_MS: 40,
     };
     function loadCfg() { try { const s = GM_getValue(STORAGE_KEY, null); return s ? { ...DEF, ...JSON.parse(s) } : { ...DEF }; } catch { return { ...DEF }; } }
     function saveCfg(c) { GM_setValue(STORAGE_KEY, JSON.stringify(c)); }
@@ -579,14 +590,13 @@
         setTimeout(() => setBar('📭 今日缓存显示全售罄，仍会重新扫描确认。', '#434343'), 800);
     }
     // ── 状态机变量 ────────────────────────────────────────────────────────────
-    let state = 'SCANNING';   // SCANNING | TASK_UNIT | SLEEPING | DONE
+    let state = 'SCANNING';   // SCANNING | TASK_UNIT | DONE
     // SCANNING / TASK_UNIT
     let qIdx = 0, sweepRestocks = [], lastTabSwitch = 0, sweepBusyCount = 0, emptySweepCount = 0;
     const soldOutHits = Object.create(null);
     let taskTarget = null, taskPhase = 'IDLE', taskClickTime = 0, taskRLCount = 0;
     let lastCloseReason = '';
-    let sleepUntil = 0;
-    const MAX_RL = 3, MODAL_WAIT = 15000, EMPTY_SWEEP_CONFIRM = 3, EMPTY_SWEEP_RETRY_MS = 180000, SOLD_OUT_CONFIRM = 2;
+    const MAX_RL = 3, MODAL_WAIT = 15000, EMPTY_SWEEP_CONFIRM = 3, SOLD_OUT_CONFIRM = 2;
     // ── 工具函数 ──────────────────────────────────────────────────────────────
     function parseRestock(text) {
         const m = (text || '').match(/0?(\d{1,2})月0?(\d{1,2})日\s*(\d{1,2}):0?(\d{1,2})/);
@@ -610,6 +620,17 @@
         if (ms >   10000) return   3000;
         return 0;
     }
+    function clampInt(value, min, max, fallback) {
+        const n = parseInt(value, 10);
+        if (!Number.isFinite(n)) return fallback;
+        return Math.max(min, Math.min(max, n));
+    }
+    function randInt(min, max) {
+        min = Math.floor(Number(min) || 0);
+        max = Math.floor(Number(max) || 0);
+        if (max < min) { const t = min; min = max; max = t; }
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
     function isRealBizId(id) { return id && !id.startsWith('debug-'); }
     // ── v8.19: 黄金时间判断（9:30-11:00）────────────────────────────────────
     function isGoldenTime() {
@@ -622,7 +643,7 @@
         return time >= start && time <= end;
     }
     // ── DOM 访问 ──────────────────────────────────────────────────────────────
-    const tabEl     = n => document.querySelectorAll('#switchTabBox .switch-tab-item')[n];
+    const tabEl     = n => document.querySelectorAll('#switchTabBox .switch-tab-item')[n - 1];
     const btnEl     = n => document.querySelector(`.glm-coding-package-list > div:nth-child(${n}) > div > .package-card-btn-box > button`);
     const canBuy    = b => b && !b.disabled && !b.classList.contains('is-disabled') && !b.classList.contains('disabled') && !/售罄|补货|暂时/.test(b.innerText || '');
     const isSoldOut = b => /售罄|补货|暂时/.test(b?.innerText || '');
@@ -695,8 +716,12 @@
     function checkPayDialog() {
         const dlg = getPayDialog();
         if (!dlg) return 'keep';
-        // 绝对安全锁：本次会话中只要成功过一次，永不关闭
-        if (everSucceeded) return 'keep';
+        if (window.__glmRushConfirmed) {
+            window.__glmRushDialogSeen = 1;
+            return 'keep';
+        }
+        // 只有当前拿到有效 bizId，才锁住支付弹窗，避免历史成功状态误判
+        if (everSucceeded && PS.bizId) return 'keep';
         // 接口还没返回
         if (PS.inProgress) return 'keep';
         // ── 情况 A：接口 555 系统繁忙 → 关弹窗试下一个
@@ -812,6 +837,9 @@
     }
     function openConfigPanel() {
         document.getElementById('glm-cfg-ov')?.remove();
+        const delayMin = Number.isFinite(parseInt(CFG.CAPTCHA_CLICK_DELAY_MIN_MS, 10)) ? parseInt(CFG.CAPTCHA_CLICK_DELAY_MIN_MS, 10) : 250;
+        const delayMaxRaw = Number.isFinite(parseInt(CFG.CAPTCHA_CLICK_DELAY_MAX_MS, 10)) ? parseInt(CFG.CAPTCHA_CLICK_DELAY_MAX_MS, 10) : 400;
+        const delayMax = Math.max(delayMin, delayMaxRaw);
         if (!document.getElementById('glm-tf-s')) {
             const s = document.createElement('style'); s.id = 'glm-tf-s';
             s.textContent = '.tf-item{padding:6px 10px;margin-bottom:4px;border-radius:4px;cursor:pointer;font-size:13px;color:#333;border:1px solid transparent;transition:all .15s}.tf-item:hover{background:#f5f5f5}.tf-item.active{background:#e6f7ff;border-color:#91d5ff;color:#1890ff;font-weight:700}.tf-btn{padding:4px 8px;font-size:10px;cursor:pointer;border:1px solid #d9d9d9;border-radius:4px;background:#fff;color:#555;height:28px;transition:.2s}.tf-btn:hover{border-color:#40a9ff;color:#40a9ff}';
@@ -850,6 +878,33 @@
                     <span style="font-size:14px;color:#555">自动点击验证码确定</span>
                     <span title="默认关闭。开启后点完验证码文字会自动点确定；关闭后需要你手动点确定。" style="margin-left:6px;cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
                 </label>
+                <div style="padding-left:26px;display:flex;flex-direction:column;gap:10px">
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <span style="font-size:13px;color:#666">验证码点字延时策略</span>
+                        <span title="每次点字都会在最小值和最大值之间随机取一个延时。" style="cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                        <span style="font-size:13px;color:#888">最小延时</span>
+                        <input type="number" id="glm-cdmin" value="${delayMin}" min="1" max="10000" style="width:72px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
+                        <span style="font-size:13px;color:#888">ms</span>
+                        <span style="font-size:13px;color:#888">最大延时</span>
+                        <input type="number" id="glm-cdmax" value="${delayMax}" min="1" max="10000" style="width:72px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
+                        <span style="font-size:13px;color:#888">ms</span>
+                    </div>
+                </div>
+                <div style="border-top:1px dashed #eee;padding-top:12px;margin-top:4px"></div>
+                <label style="display:flex;align-items:center;cursor:pointer">
+                    <input type="checkbox" id="glm-re" ${CFG.RUSH_ENABLED ? 'checked' : ''} style="margin-right:8px">
+                    <span style="font-size:14px;color:#555">冲刺模式（定时确认）</span>
+                </label>
+                <div style="display:flex;align-items:center;gap:6px;padding-left:26px">
+                    <span style="font-size:13px;color:#888">目标时间</span>
+                    <input type="number" id="glm-rh" value="${CFG.RUSH_TARGET_HOUR}" min="0" max="23" style="width:52px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
+                    <span style="font-size:14px;color:#888">:</span>
+                    <input type="number" id="glm-rm" value="${CFG.RUSH_TARGET_MIN}" min="0" max="59" style="width:52px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
+                    <span style="font-size:14px;color:#888">:</span>
+                    <input type="number" id="glm-rs" value="${CFG.RUSH_TARGET_SEC}" min="0" max="59" style="width:52px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
+                </div>
             </div>
             <div style="display:flex;justify-content:space-between;gap:10px">
                 <button id="glm-multi" style="padding:8px 16px;border:1px solid #52c41a;background:#f6ffed;color:#52c41a;border-radius:6px;cursor:pointer;font-weight:600">🚀 一键多开</button>
@@ -876,6 +931,15 @@
                 AUTO_CLICK_SUB    : panel.querySelector('#glm-acs').checked,
                 AUTO_CAPTCHA_CLICK: panel.querySelector('#glm-acc').checked,
                 AUTO_CAPTCHA_CONFIRM: panel.querySelector('#glm-acf').checked,
+                CAPTCHA_CLICK_DELAY_MODE: 'range',
+                CAPTCHA_CLICK_DELAY_MS: Math.round((parseInt(panel.querySelector('#glm-cdmin').value, 10) + parseInt(panel.querySelector('#glm-cdmax').value, 10)) / 2),
+                CAPTCHA_CLICK_DELAY_MIN_MS: parseInt(panel.querySelector('#glm-cdmin').value, 10),
+                CAPTCHA_CLICK_DELAY_MAX_MS: parseInt(panel.querySelector('#glm-cdmax').value, 10),
+                CAPTCHA_CLICK_DELAY_JITTER_PERCENT: CFG.CAPTCHA_CLICK_DELAY_JITTER_PERCENT,
+                RUSH_ENABLED: panel.querySelector('#glm-re').checked,
+                RUSH_TARGET_HOUR: parseInt(panel.querySelector('#glm-rh').value, 10),
+                RUSH_TARGET_MIN: parseInt(panel.querySelector('#glm-rm').value, 10),
+                RUSH_TARGET_SEC: parseInt(panel.querySelector('#glm-rs').value, 10),
                 SAFE_DEFAULTS_VERSION,
             });
             ov.remove(); alert('已保存，即将刷新。'); location.reload();
@@ -887,22 +951,12 @@
     // ═══════════════════════════════════════════════════════════════════════════
     function tick() {
         if (state === 'DONE') return;
-        if (ensureDiscountEntry()) return;
-        if (state === 'SLEEPING') {
-            const rem = sleepUntil - Date.now();
-            if (rem <= 0) {
-                // v8.0: 黄金时间禁止刷新
-                if (isGoldenTime()) {
-                    setBar('🔥 黄金时间！取消刷新，继续高频监控！', '#ff4d4f');
-                    state = 'SCANNING'; qIdx = 0; sweepRestocks = [];
-                } else {
-                    location.replace(GLM_CODING_URL());
-                }
-            } else {
-                setBar(`💤 休眠中，<b>${fmt(rem)}</b> 后刷新`, '#434343');
-            }
-            return;
+        if (window.__glmRushConfirmed && window.__glmRushDialogSeen && !getPayDialog()) {
+            window.__glmRushConfirmed = 0;
+            window.__glmRushDialogSeen = 0;
+            console.log('[GLM] rush lock cleared');
         }
+        if (ensureDiscountEntry()) return;
         if (state === 'TASK_UNIT') { doTaskUnit(); return; }
         doScan();
     }
@@ -939,13 +993,9 @@
     }
     function onSweepDone() {
         if (sweepBusyCount >= scanQueue.length) {
-            setBar('⚡ 所有套餐系统繁忙(batch-preview 555)，刷新页面重试...', '#d46b08');
+            setBar('⚠️ 所有套餐当前都在系统繁忙，刷新页面重试...', '#d46b08');
             setTimeout(() => location.replace(GLM_CODING_URL()), 1500);
             return;
-        }
-        if (!sweepRestocks.length && isGoldenTime()) {
-            setBar(`🔥 黄金时间！系统繁忙中，持续高频监控！`, '#ff4d4f');
-            qIdx = 0; sweepRestocks = []; sweepBusyCount = 0; emptySweepCount = 0; return;
         }
         if (!sweepRestocks.length) {
             emptySweepCount++;
@@ -954,28 +1004,22 @@
                 setBar(`📭 暂未发现可买/补货时间，继续确认 ${emptySweepCount}/${EMPTY_SWEEP_CONFIRM}...`, '#434343');
                 return;
             }
-            state = 'SLEEPING';
-            sleepUntil = Date.now() + EMPTY_SWEEP_RETRY_MS;
-            setBar(`📭 连续 ${EMPTY_SWEEP_CONFIRM} 轮未发现库存，${fmt(EMPTY_SWEEP_RETRY_MS)} 后重新扫描。脚本未停止。`, '#434343');
+            emptySweepCount = 0;
+            setBar('📭 连续多轮未发现库存，继续高频扫描...', '#434343');
             return;
         }
         emptySweepCount = 0;
         sweepRestocks.sort((a, b) => a.msUntil - b.msUntil);
         const nearest = sweepRestocks[0];
         const sleep   = calcSleepMs(nearest.msUntil);
-        // ── v8.19: 黄金时间（9:30-11:00）禁止刷新页面 ─────────────────────────
-        if (isGoldenTime()) {
-            setBar(`🔥 黄金时间！补货倒计时 <b>${fmt(nearest.msUntil)}</b>，禁止刷新，高频监控！`, '#ff4d4f');
-            qIdx = 0; sweepRestocks = []; sweepBusyCount = 0; return;
-        }
+        qIdx = 0; sweepRestocks = []; sweepBusyCount = 0;
         if (sleep === 0) {
             setBar(`⚡ 补货倒计时 <b>${fmt(nearest.msUntil)}</b>，高频监控！`, '#d4380d');
-            qIdx = 0; sweepRestocks = []; sweepBusyCount = 0; return;
+            return;
         }
         if (CFG.SMART_REFRESH) {
-            state = 'SLEEPING'; sleepUntil = Date.now() + sleep;
-            setBar(`💤 补货还需 <b>${fmt(nearest.msUntil)}</b>，<b>${fmt(sleep)}</b> 后刷新`, '#434343');
-        } else { qIdx = 0; sweepRestocks = []; }
+            setBar(`🕙 补货还需 <b>${fmt(nearest.msUntil)}</b>，持续扫描中`, '#434343');
+        }
     }
     function doTaskUnit() {
         const { tab, pkg } = taskTarget;
@@ -1070,9 +1114,9 @@
                     return;
                 }
                 const prices = readDialogPrices();
-                if (everSucceeded || prices?.any) {
+                if (everSucceeded && PS.bizId || prices?.any) {
                     state = 'DONE';
-                    if (everSucceeded) showPayAlarm();
+                    if (everSucceeded && PS.bizId) showPayAlarm();
                     setBar('💳 <b>支付弹窗已出现！请立即扫码支付！</b> 脚本已停止。', '#16a34a');
                 } else {
                     setBar(`🔄 ${TABS_MAP[tab]}·${PKGS_MAP[pkg]} 弹窗等待确认...`, '#1677ff');
@@ -1149,23 +1193,114 @@
     'use strict';
     if (window.__glmCaptchaPromptBridge === 1) return;
     window.__glmCaptchaPromptBridge = 1;
-    const RUSH_CONFIG = {
-        enabled: true,
-        targetHour: 10,
-        targetMin: 0,
-        targetSec: 0,
-        staggerMs: 2000,
-        pollInterval: 50,
-        pollTimeout: 20000,
-    };
+    const RUSH_CFG = (() => {
+        try {
+            const raw = GM_getValue('glm_coding_config_v5', '{}');
+            const cfg = JSON.parse(raw || '{}');
+            const ph = parseInt(cfg.RUSH_TARGET_HOUR, 10);
+            const pm = parseInt(cfg.RUSH_TARGET_MIN, 10);
+            const ps = parseInt(cfg.RUSH_TARGET_SEC, 10);
+            return {
+                enabled: cfg.RUSH_ENABLED === true,
+                targetHour: Number.isFinite(ph) ? ph : 9,
+                targetMin: Number.isFinite(pm) ? pm : 59,
+                targetSec: Number.isFinite(ps) ? ps : 58,
+                holdWindowMs: Math.max(0, parseInt(cfg.RUSH_HOLD_WINDOW_MS, 10) || 10000),
+                releaseAdvanceMs: Math.max(0, parseInt(cfg.RUSH_RELEASE_ADVANCE_MS, 10) || 40),
+                staggerMs: 2000,
+                pollInterval: 50,
+                pollTimeout: 20000,
+            };
+        } catch {
+            return { enabled: false, targetHour: 9, targetMin: 59, targetSec: 58, holdWindowMs: 10000, releaseAdvanceMs: 40, staggerMs: 2000, pollInterval: 50, pollTimeout: 20000 };
+        }
+    })();
     const CAPTCHA_CFG = (() => {
         try {
             const raw = GM_getValue('glm_coding_config_v5', '{}');
-            return { AUTO_CAPTCHA_CLICK: true, AUTO_CAPTCHA_CONFIRM: false, ...JSON.parse(raw || '{}') };
+            return {
+                AUTO_CAPTCHA_CLICK: true,
+                AUTO_CAPTCHA_CONFIRM: false,
+                CAPTCHA_CLICK_DELAY_MODE: 'fixed',
+                CAPTCHA_CLICK_DELAY_MS: 325,
+                CAPTCHA_CLICK_DELAY_MIN_MS: 250,
+                CAPTCHA_CLICK_DELAY_MAX_MS: 400,
+                CAPTCHA_CLICK_DELAY_JITTER_PERCENT: 20,
+                ...JSON.parse(raw || '{}')
+            };
         } catch {
-            return { AUTO_CAPTCHA_CLICK: true, AUTO_CAPTCHA_CONFIRM: false };
+            return {
+                AUTO_CAPTCHA_CLICK: true,
+                AUTO_CAPTCHA_CONFIRM: false,
+                CAPTCHA_CLICK_DELAY_MODE: 'fixed',
+                CAPTCHA_CLICK_DELAY_MS: 325,
+                CAPTCHA_CLICK_DELAY_MIN_MS: 250,
+                CAPTCHA_CLICK_DELAY_MAX_MS: 400,
+                CAPTCHA_CLICK_DELAY_JITTER_PERCENT: 20
+            };
         }
     })();
+    function clampCaptchaInt(value, min, max, fallback) {
+        var n = parseInt(value, 10);
+        if (!Number.isFinite(n)) return fallback;
+        return Math.max(min, Math.min(max, n));
+    }
+    function randCaptchaInt(min, max) {
+        min = Math.floor(Number(min) || 0);
+        max = Math.floor(Number(max) || 0);
+        if (max < min) { var t = min; min = max; max = t; }
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+    function normalizeCaptchaDirectDelayMode(mode) {
+        mode = String(mode || 'fixed').trim().toLowerCase();
+        return (mode === 'range' || mode === 'jitter') ? mode : 'fixed';
+    }
+    function readCaptchaDirectDelayOverride() {
+        try {
+            var raw = window.__glmCaptchaDelayExperiment;
+            if (!raw) return null;
+            if (typeof raw === 'string') return JSON.parse(raw);
+            if (typeof raw === 'object') return raw;
+        } catch {}
+        return null;
+    }
+    function normalizeCaptchaDirectDelayConfig(config) {
+        config = config || {};
+        var stepDelays = Array.isArray(config.stepDelays)
+            ? config.stepDelays.map(function (value) {
+                return clampCaptchaInt(value, 1, 10000, 220);
+            }).filter(function (value) {
+                return Number.isFinite(value) && value > 0;
+            })
+            : null;
+        return {
+            delayMode: normalizeCaptchaDirectDelayMode(config.delayMode),
+            gapMs: clampCaptchaInt(config.gapMs, 1, 10000, 220),
+            minGapMs: clampCaptchaInt(config.minGapMs, 1, 10000, 200),
+            maxGapMs: clampCaptchaInt(config.maxGapMs, 1, 10000, 500),
+            jitterPercent: clampCaptchaInt(config.jitterPercent, 0, 1000, 20),
+            stepDelays: stepDelays && stepDelays.length ? stepDelays : null,
+        };
+    }
+    function getCaptchaDirectDelayConfig() {
+        var baseConfig = normalizeCaptchaDirectDelayConfig({
+            delayMode: CAPTCHA_CFG.CAPTCHA_CLICK_DELAY_MODE,
+            gapMs: CAPTCHA_CFG.CAPTCHA_CLICK_DELAY_MS,
+            minGapMs: CAPTCHA_CFG.CAPTCHA_CLICK_DELAY_MIN_MS,
+            maxGapMs: CAPTCHA_CFG.CAPTCHA_CLICK_DELAY_MAX_MS,
+            jitterPercent: CAPTCHA_CFG.CAPTCHA_CLICK_DELAY_JITTER_PERCENT,
+        });
+        var override = readCaptchaDirectDelayOverride();
+        if (!override) return baseConfig;
+        return normalizeCaptchaDirectDelayConfig({
+            delayMode: override.delayMode != null ? override.delayMode : baseConfig.delayMode,
+            gapMs: override.gapMs != null ? override.gapMs : baseConfig.gapMs,
+            minGapMs: override.minGapMs != null ? override.minGapMs : baseConfig.minGapMs,
+            maxGapMs: override.maxGapMs != null ? override.maxGapMs : baseConfig.maxGapMs,
+            jitterPercent: override.jitterPercent != null ? override.jitterPercent : baseConfig.jitterPercent,
+            stepDelays: Array.isArray(override.stepDelays) ? override.stepDelays : baseConfig.stepDelays,
+        });
+    }
     function getWindowIndex() {
         const params = new URLSearchParams(location.search);
         return parseInt(params.get('wi') || '0', 10);
@@ -1173,13 +1308,25 @@
     function getTargetTimestamp() {
         const now = new Date();
         const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(),
-            RUSH_CONFIG.targetHour, RUSH_CONFIG.targetMin, RUSH_CONFIG.targetSec, 0);
-        const offset = getWindowIndex() * RUSH_CONFIG.staggerMs;
+            RUSH_CFG.targetHour, RUSH_CFG.targetMin, RUSH_CFG.targetSec, 0);
+        const offset = getWindowIndex() * RUSH_CFG.staggerMs;
         return target.getTime() + offset;
     }
-    let lastCaptchaText = '';
-    let captchaSent = false;
-    let rushState = 'idle';
+    const captchaSession = {
+        lastText: '',
+        sent: false,
+        state: 'idle',
+    };
+    function getCaptchaLastText() { return captchaSession.lastText; }
+    function setCaptchaLastText(text) { captchaSession.lastText = text || ''; }
+    function isCaptchaSent() { return captchaSession.sent === true; }
+    function setCaptchaSent(sent) { captchaSession.sent = sent === true; }
+    function getCaptchaState() { return captchaSession.state; }
+    function setCaptchaState(state) { captchaSession.state = state; }
+    function resetCaptchaSession() {
+        setCaptchaSent(false);
+        setCaptchaLastText('');
+    }
     function serverRequest(method, path, data) {
         function doFetch() {
             return fetch('http://localhost:8888' + path, {
@@ -1213,14 +1360,14 @@
         return new Promise((resolve, reject) => {
             const start = Date.now();
             function poll() {
-                if (Date.now() - start > RUSH_CONFIG.pollTimeout) {
+                if (Date.now() - start > RUSH_CFG.pollTimeout) {
                     reject(new Error('poll timeout'));
                     return;
                 }
                 serverRequest('POST', '/result', { ts: ts }).then(d => {
                     if (d.has_result) resolve(d.result);
-                    else setTimeout(poll, RUSH_CONFIG.pollInterval);
-                }).catch(() => setTimeout(poll, RUSH_CONFIG.pollInterval));
+                    else setTimeout(poll, RUSH_CFG.pollInterval);
+                }).catch(() => setTimeout(poll, RUSH_CFG.pollInterval));
             }
             poll();
         });
@@ -1239,12 +1386,26 @@
             setTimeout(check, Math.max(0, remaining - 5000));
         });
     }
+    function shouldHoldRushConfirm(nowTs) {
+        if (!RUSH_CFG.enabled) return false;
+        const targetTs = getTargetTimestamp();
+        const remaining = targetTs - nowTs;
+        return remaining > RUSH_CFG.releaseAdvanceMs && remaining <= RUSH_CFG.holdWindowMs;
+    }
+    function waitForRushRelease() {
+        return new Promise(resolve => {
+            function check() {
+                const remaining = getTargetTimestamp() - Date.now();
+                if (remaining <= RUSH_CFG.releaseAdvanceMs) resolve();
+                else setTimeout(check, remaining > 2000 ? 20 : 5);
+            }
+            check();
+        });
+    }
     function findAndClickConfirm() {
         var selectors = [
             '.tencent-captcha-dy__btn-confirm',
             '.tencent-captcha-dy__footer .btn',
-            '.pay-dialog button.el-button--primary',
-            '.el-dialog__wrapper:not([style*="display: none"]) .el-button--primary',
             '[class*="captcha"] [class*="confirm"]',
             '[class*="captcha"] [class*="submit"]',
         ];
@@ -1270,7 +1431,7 @@
     async function handleCaptchaRush(chars) {
         var winIdx = getWindowIndex();
         var payloadText = chars.join('');
-        rushState = 'solving';
+        setCaptchaState('solving');
         rushStatus('\uD83D\uDD10 [#' + winIdx + '] \u9A8C\u8BC1\u7801\u8BC6\u522B\u4E2D: ' + payloadText + '...', '#1890ff');
         try {
             var sendRes = await serverRequest('POST', '/captcha', { text: payloadText, ts: Date.now() });
@@ -1280,9 +1441,8 @@
             rushStatus('\u23F3 [#' + winIdx + '] \u7B49\u5F85\u8BC6\u522B...', '#faad14');
             var result = await pollResult(ts);
             if (!result || !result.result || !result.result.success) {
-                rushState = 'idle';
-                captchaSent = false;
-                lastCaptchaText = '';
+                setCaptchaState('idle');
+                resetCaptchaSession();
                 rushStatus('\u274C [#' + winIdx + '] \u8BC6\u522B\u5931\u8D25: ' + (result && result.result ? result.result.error : '?') + ' \u2192 \u5FEB\u901F\u91CD\u8BD5', '#ff4d4f');
                 return;
             }
@@ -1318,7 +1478,7 @@
                 }
             }
             await new Promise(function(r) { setTimeout(r, 500); });
-            rushState = 'idle';
+            setCaptchaState('idle');
             (async function() {
                 var isRushMode = isGoldenTime();
                 if (isRushMode) {
@@ -1328,20 +1488,19 @@
                     await new Promise(function(r) { setTimeout(r, 300); });
                     rushStatus('\uD83D\uDE80 [#' + winIdx + '] \u81EA\u52A8\u786E\u8BA4...', '#237804');
                 }
-                rushState = 'confirming';
+                setCaptchaState('confirming');
                 var clicked = findAndClickConfirm();
                 if (clicked) {
-                    rushState = 'confirmed';
+                    setCaptchaState('confirmed');
                     rushStatus('\uD83C\uDFAF [#' + winIdx + '] \u5DF2\u70B9\u786E\u8BA4!' + (isRushMode ? ' (\u5361\u70B0)' : ''), '#237804');
                 } else {
-                    rushState = 'idle';
+                    setCaptchaState('idle');
                     rushStatus('\u26A0\uFE0F [#' + winIdx + '] \u672A\u627E\u5230\u786E\u8BA4\u6309\u94AE!', '#faad14');
                 }
             })();
         } catch (e) {
-            rushState = 'idle';
-            captchaSent = false;
-            lastCaptchaText = '';
+            setCaptchaState('idle');
+            resetCaptchaSession();
             console.error('[captcha-rush] error:', e);
             rushStatus('\u274C [#' + getWindowIndex() + '] \u5F02\u5E38: ' + e.message + ' \u2192 \u5FEB\u901F\u91CD\u8BD5', '#ff4d4f');
         }
@@ -1693,85 +1852,209 @@
         }
         return doFetch().catch(function() { return doGM(); });
     }
-    async function handleCaptchaDirectInPage(chars) {
+    function resolveCaptchaDirectTarget(bgEl, bgUrl) {
+        bgEl = bgEl || findCaptchaBgElementDirect();
+        if (!bgEl) throw new Error('no captcha background element');
+        bgUrl = bgUrl || captchaBgUrlFrom(bgEl);
+        if (!bgUrl) throw new Error('no captcha background url');
+        return { bgEl: bgEl, bgUrl: bgUrl };
+    }
+    async function requestCaptchaDirectResult(payloadText, bgUrl) {
+        console.log('[captcha-direct-page] bg:', bgUrl.substring(0, 120));
+        var image = await fetchCaptchaImageDirect(bgUrl);
+        var resp = await serverRequest('POST', '/captcha_direct', {
+            image: image,
+            text: payloadText,
+            remark: payloadText,
+            ts: Date.now(),
+            source: 'glm-coding-helper-page-direct'
+        });
+        var result = resp && resp.result;
+        if (!result || !result.success || !Array.isArray(result.click_coords)) {
+            throw new Error('bad direct result: ' + JSON.stringify(resp).substring(0, 180));
+        }
+        return result;
+    }
+    function normalizeCaptchaDirectCoord(coord, rect) {
+        var nx = Number(coord.nx);
+        var ny = Number(coord.ny);
+        if (!Number.isFinite(nx) && Number.isFinite(Number(coord.rel_x))) nx = Number(coord.rel_x) / rect.width;
+        if (!Number.isFinite(ny) && Number.isFinite(Number(coord.rel_y))) ny = Number(coord.rel_y) / rect.height;
+        if (!Number.isFinite(nx) || !Number.isFinite(ny)) return null;
+        return { nx: nx, ny: ny };
+    }
+    function createCaptchaDirectClickSchedule() {
+        return {
+            ...getCaptchaDirectDelayConfig(),
+            afterClicksMs: 350,
+        };
+    }
+    function buildCaptchaDirectFixedDelayPlan(result, schedule) {
+        var delays = [];
+        for (var i = 0; i < result.click_coords.length; i++) {
+            delays.push(schedule.gapMs);
+        }
+        return delays;
+    }
+    function buildCaptchaDirectRangeDelayPlan(result, schedule) {
+        var minGap = Math.min(schedule.minGapMs, schedule.maxGapMs);
+        var maxGap = Math.max(schedule.minGapMs, schedule.maxGapMs);
+        var delays = [];
+        for (var i = 0; i < result.click_coords.length; i++) {
+            delays.push(randCaptchaInt(minGap, maxGap));
+        }
+        return delays;
+    }
+    function buildCaptchaDirectJitterDelayPlan(result, schedule) {
+        var baseGap = schedule.gapMs;
+        var jitterPercent = Math.max(0, schedule.jitterPercent);
+        var jitterDelta = Math.round(baseGap * jitterPercent / 100);
+        var minGap = Math.max(1, baseGap - jitterDelta);
+        var maxGap = Math.max(minGap, baseGap + jitterDelta);
+        var delays = [];
+        for (var i = 0; i < result.click_coords.length; i++) {
+            delays.push(randCaptchaInt(minGap, maxGap));
+        }
+        return delays;
+    }
+    function buildCaptchaDirectStepDelayPlan(result, schedule) {
+        var delays = [];
+        var stepDelays = Array.isArray(schedule.stepDelays) ? schedule.stepDelays : [];
+        for (var i = 0; i < result.click_coords.length; i++) {
+            delays.push(stepDelays[i] != null ? stepDelays[i] : schedule.gapMs);
+        }
+        return delays;
+    }
+    function resolveCaptchaDirectDelayPlanBuilder(schedule) {
+        if (Array.isArray(schedule.stepDelays) && schedule.stepDelays.length) return buildCaptchaDirectStepDelayPlan;
+        if (schedule.delayMode === 'range') return buildCaptchaDirectRangeDelayPlan;
+        if (schedule.delayMode === 'jitter') return buildCaptchaDirectJitterDelayPlan;
+        return buildCaptchaDirectFixedDelayPlan;
+    }
+    function buildCaptchaDirectDelayPlan(result, schedule) {
+        return resolveCaptchaDirectDelayPlanBuilder(schedule)(result, schedule);
+    }
+    function buildCaptchaDirectClickPlan(rect, result, schedule) {
+        var delays = buildCaptchaDirectDelayPlan(result, schedule);
+        var steps = [];
+        for (var i = 0; i < result.click_coords.length; i++) {
+            var coord = result.click_coords[i];
+            var normalized = normalizeCaptchaDirectCoord(coord, rect);
+            if (!normalized) continue;
+            steps.push({
+                x: normalized.nx * rect.width,
+                y: normalized.ny * rect.height,
+                label: coord.char || String(i + 1),
+                delayMs: delays[i],
+            });
+        }
+        return {
+            steps: steps,
+            afterClicksMs: schedule.afterClicksMs,
+        };
+    }
+    async function sleepCaptchaDirectClickGap(delayMs) {
+        await new Promise(function(r) { setTimeout(r, delayMs); });
+    }
+    async function sleepCaptchaDirectAfterClicks(plan) {
+        await new Promise(function(r) { setTimeout(r, plan.afterClicksMs); });
+    }
+    async function runCaptchaDirectClickStep(bgEl, step, shouldWaitAfter) {
+        dispatchClickAt(bgEl, step.x, step.y, step.label);
+        if (shouldWaitAfter) {
+            await sleepCaptchaDirectClickGap(step.delayMs);
+        }
+    }
+    async function clickCaptchaDirectCoords(bgEl, result) {
+        var schedule = createCaptchaDirectClickSchedule();
+        var rect = bgEl.getBoundingClientRect();
+        var plan = buildCaptchaDirectClickPlan(rect, result, schedule);
+        console.log('[captcha-direct-page] click result:', JSON.stringify(result).substring(0, 260));
+        for (var i = 0; i < plan.steps.length; i++) {
+            await runCaptchaDirectClickStep(bgEl, plan.steps[i], i < plan.steps.length - 1);
+        }
+        await sleepCaptchaDirectAfterClicks(plan);
+    }
+    async function finishCaptchaDirectConfirm() {
+        if (RUSH_CFG.enabled) {
+            var nowTs = Date.now();
+            if (shouldHoldRushConfirm(nowTs)) {
+                var targetTs = getTargetTimestamp();
+                console.log('[captcha-rush] hold confirm for ' + Math.max(0, targetTs - nowTs).toFixed(0) + 'ms');
+                await waitForRushRelease();
+                console.log('[captcha-rush] release confirm');
+            }
+            var clicked = findAndClickConfirm();
+            if (clicked) window.__glmRushConfirmed = Date.now();
+        } else if (CAPTCHA_CFG.AUTO_CAPTCHA_CONFIRM) {
+            findAndClickConfirm();
+        } else {
+            console.log('[captcha-direct-page] captcha confirm is disabled; waiting for manual confirm');
+        }
+    }
+    async function handleCaptchaDirectInPage(chars, bgEl, bgUrl) {
         if (!CAPTCHA_CFG.AUTO_CAPTCHA_CLICK) {
             console.log('[captcha-direct-page] auto captcha click disabled');
             return;
         }
-        if (rushState === 'solving') return;
-        rushState = 'solving';
+        if (getCaptchaState() === 'solving') return;
+        setCaptchaState('solving');
         var payloadText = chars.join('');
         try {
-            var bgEl = findCaptchaBgElementDirect();
-            if (!bgEl) throw new Error('no captcha background element');
-            var bgUrl = captchaBgUrlFrom(bgEl);
-            if (!bgUrl) throw new Error('no captcha background url');
-            console.log('[captcha-direct-page] bg:', bgUrl.substring(0, 120));
-            var image = await fetchCaptchaImageDirect(bgUrl);
-            var resp = await serverRequest('POST', '/captcha_direct', {
-                image: image,
-                text: payloadText,
-                remark: payloadText,
-                ts: Date.now(),
-                source: 'glm-coding-helper-page-direct'
-            });
-            var result = resp && resp.result;
-            if (!result || !result.success || !Array.isArray(result.click_coords)) {
-                throw new Error('bad direct result: ' + JSON.stringify(resp).substring(0, 180));
-            }
-            var rect = bgEl.getBoundingClientRect();
-            console.log('[captcha-direct-page] click result:', JSON.stringify(result).substring(0, 260));
-            for (var i = 0; i < result.click_coords.length; i++) {
-                var c = result.click_coords[i];
-                var nx = Number(c.nx);
-                var ny = Number(c.ny);
-                if (!Number.isFinite(nx) && Number.isFinite(Number(c.rel_x))) nx = Number(c.rel_x) / rect.width;
-                if (!Number.isFinite(ny) && Number.isFinite(Number(c.rel_y))) ny = Number(c.rel_y) / rect.height;
-                if (!Number.isFinite(nx) || !Number.isFinite(ny)) continue;
-                dispatchClickAt(bgEl, nx * rect.width, ny * rect.height, c.char || String(i + 1));
-                await new Promise(function(r) { setTimeout(r, 220); });
-            }
-            await new Promise(function(r) { setTimeout(r, 350); });
-            if (CAPTCHA_CFG.AUTO_CAPTCHA_CONFIRM) {
-                findAndClickConfirm();
-            } else {
-                console.log('[captcha-direct-page] captcha confirm is disabled; waiting for manual confirm');
-            }
+            var target = resolveCaptchaDirectTarget(bgEl, bgUrl);
+            var result = await requestCaptchaDirectResult(payloadText, target.bgUrl);
+            await clickCaptchaDirectCoords(target.bgEl, result);
+            await finishCaptchaDirectConfirm();
         } catch (e) {
             console.error('[captcha-direct-page] error:', e);
-            captchaSent = false;
-            lastCaptchaText = '';
+            resetCaptchaSession();
         } finally {
-            rushState = 'idle';
+            setCaptchaState('idle');
         }
+    }
+    function collectCaptchaChallenge() {
+        var found = findCaptchaPromptElement();
+        if (!found) {
+            setCaptchaSent(false);
+            return null;
+        }
+        var bgEl = findCaptchaBgElementDirect();
+        var bgUrl = captchaBgUrlFrom(bgEl);
+        if (!bgEl || !bgUrl) {
+            setCaptchaSent(false);
+            return null;
+        }
+        var payloadText = found.chars.join('');
+        if (!payloadText) {
+            setCaptchaSent(false);
+            return null;
+        }
+        return { found: found, bgEl: bgEl, bgUrl: bgUrl, payloadText: payloadText };
+    }
+    function syncCaptchaChallengeText(challenge) {
+        if (challenge.payloadText !== getCaptchaLastText()) {
+            setCaptchaLastText(challenge.payloadText);
+            setCaptchaSent(false);
+            console.log('[captcha] sel:', challenge.found.selector);
+            console.log('[captcha] raw:', challenge.found.text);
+            console.log('[captcha] prompt:', challenge.payloadText);
+        }
+    }
+    function tryStartCaptchaDirectSolve(challenge) {
+        if (isCaptchaSent()) return;
+        setCaptchaSent(true);
+        console.log('[captcha] page direct solver:', challenge.payloadText);
+        handleCaptchaDirectInPage(challenge.found.chars, challenge.bgEl, challenge.bgUrl).catch(function(e) {
+            console.error('[captcha-direct-page] unhandled:', e);
+        });
     }
     async function checkCaptchaPrompt() {
-        if (rushState === 'solving') return;
-        var found = findCaptchaPromptElement();
-        if (!found) { captchaSent = false; return; }
-        var payloadText = found.chars.join('');
-        if (!payloadText) { captchaSent = false; return; }
-        if (payloadText !== lastCaptchaText) {
-            lastCaptchaText = payloadText;
-            captchaSent = false;
-            console.log('[captcha] sel:', found.selector);
-            console.log('[captcha] raw:', found.text);
-            console.log('[captcha] prompt:', payloadText);
-        }
-        if (!captchaSent) {
-            captchaSent = true;
-            console.log('[captcha] page direct solver:', payloadText);
-            handleCaptchaDirectInPage(found.chars).catch(function(e) { console.error('[captcha-direct-page] unhandled:', e); });
-            return;
-            if (RUSH_CONFIG.enabled) {
-                handleCaptchaRush(found.chars).catch(function(e) { console.error('[captcha-rush] unhandled:', e); });
-            } else {
-                serverRequest('POST', '/captcha', { text: payloadText, ts: Date.now() })
-                    .then(function() { console.log('[captcha] legacy ok'); })
-                    .catch(function(e) { console.log('[captcha] legacy err:', e); });
-            }
-        }
+        if (getCaptchaState() === 'solving') return;
+        var challenge = collectCaptchaChallenge();
+        if (!challenge) return;
+        syncCaptchaChallengeText(challenge);
+        tryStartCaptchaDirectSolve(challenge);
     }
     setInterval(checkCaptchaPrompt, 50);
-    console.log('[captcha] bridge v2 started | rush=' + RUSH_CONFIG.enabled + ' | wi=' + getWindowIndex() + ' | target=10:' + String(RUSH_CONFIG.targetSec).padStart(2,'0') + '+' + (getWindowIndex() * RUSH_CONFIG.staggerMs / 1000) + 's');
+    console.log('[captcha] bridge v2 started | rush=' + RUSH_CFG.enabled + ' | wi=' + getWindowIndex() + ' | target=' + String(RUSH_CFG.targetHour).padStart(2,'0') + ':' + String(RUSH_CFG.targetMin).padStart(2,'0') + ':' + String(RUSH_CFG.targetSec).padStart(2,'0') + '+' + (getWindowIndex() * RUSH_CFG.staggerMs / 1000) + 's');
 })();
