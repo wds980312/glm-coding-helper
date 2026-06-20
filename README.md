@@ -38,7 +38,7 @@ CHANGELOG.md
 
 ## 快速开始
 
-现在普通用户不需要手动装 Python、不需要自己跑 PowerShell 安装命令。最简单的方式是：
+Windows 普通用户可使用便携包，无需手动安装 Python；macOS 当前使用在线安装方式，需要 Apple Silicon 和 Python 3.12。最简单的方式是：
 
 1. 下载 Release 压缩包
 2. 解压
@@ -107,11 +107,22 @@ Greasy Fork 和仓库根目录的 `glm-coding-helper.user.js` 都是给普通用
 
 ### 4. 启动后端
 
+Windows：
+
 ```text
 start-backend-pipeline-gui.cmd
 ```
 
 首次使用如果环境没装好，先双击 `one-click-start.cmd` 在本机创建/修复环境；之后再用 `start-backend-pipeline-gui.cmd` 日常启动。
+
+macOS（Apple Silicon）：
+
+```text
+首次安装并启动：one-click-start.command
+日常 GUI 启动：start-backend-pipeline-gui.command
+```
+
+macOS 的完整前置条件、Gatekeeper 处理和验证步骤见 [macOS 安装与使用说明](docs/macos-setup.md)。
 
 后端启动后默认监听：
 
@@ -207,6 +218,7 @@ https://www.bigmodel.cn/glm-coding
 - 队列传递裁剪结果，零序列化开销
 
 启动（任选其一）：
+
 ```powershell
 # 方式 1：双击 start-backend-pipeline-gui.cmd（推荐 Windows 用户，弹 GUI 窗口）
 # 方式 2：命令行手动
@@ -215,7 +227,9 @@ pwsh start-backend-pipeline-gui.ps1
 python backend/server.py
 ```
 
-双击启动器会自动检测 venv（`venv/` 或 `.venv_paddle/`）、检查依赖（fastapi/uvicorn/psutil）、缺失时自动 pip install；如果发现旧包复制出来的外来 venv，会提示先运行 `one-click-start.cmd` 在本机重建。端口被占用时会显示中文提示（含 PID/进程名/命令行），杀进程前需用户确认。
+macOS 日常启动请双击 `start-backend-pipeline-gui.command`，首次安装请双击 `one-click-start.command`。
+
+Windows 双击启动器会自动检测 venv（`venv/` 或 `.venv_paddle/`）、检查依赖（fastapi/uvicorn/psutil）、缺失时自动 pip install；如果发现旧包复制出来的外来 venv，会提示先运行 `one-click-start.cmd` 在本机重建。端口被占用时会显示中文提示（含 PID/进程名/命令行），杀进程前需用户确认。
 
 ### 可视化 GUI 启动器
 
@@ -240,6 +254,9 @@ start-backend-pipeline-gui.cmd
 | `glm-coding-helper.user.js` | 给 Tampermonkey 安装的主脚本 |
 | `one-click-start.cmd` | 首次安装环境（CPU 依赖） |
 | `start-backend-pipeline-gui.cmd` | 日常启动 pipeline 后端 + 弹 Tk 可视化窗口 |
+| `one-click-start.command` | macOS 首次安装 CPU 环境并启动后端 |
+| `start-backend-pipeline-gui.command` | macOS 日常启动 pipeline 后端 + Tk 窗口 |
+| `docs/macos-setup.md` | macOS 中文安装、限制与验证说明 |
 | `scripts/` | 后端和打包脚本 |
 | `backend/` | Pipeline 后端（FastAPI + 多进程 YOLO→OCR） |
 | `models/` | 本地识别模型 |
@@ -374,6 +391,5 @@ https://greasyfork.org/zh-CN/scripts/572157-glm-coding-plan%E6%8A%A2%E8%B4%AD%E5
 | 35px | `363/379 = 95.8%` | `379/379 = 100%` |
 
 结论：轻量 `ddddocr` 管道的优势是体积小、速度快，适合作为快速模式或备用模式；本项目当前 PP-OCRv5 + YOLO + 提示字约束方案的缺点是慢、环境大，但在本地隐藏集和压力测试中稳定性更好。
-
 
 

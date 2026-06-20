@@ -40,13 +40,16 @@ $Include = @(
     "glm-coding-helper.user.js",
     "scripts\userscripts\glm-coding-captcha-direct.user.js",
     "one-click-start.cmd",
+    "one-click-start.command",
     "start-backend-pipeline-gui.cmd",
+    "start-backend-pipeline-gui.command",
     "start-backend-pipeline-gui.ps1",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
     "requirements-backend-cpu.txt",
     "scripts",
+    "docs",
     "models",
     "backend",
     ".paddlex_cache_cpu",
@@ -86,6 +89,10 @@ GLM Coding Helper portable CPU package
 2. Double-click one-click-start.cmd on first run so the backend environment is created on this computer.
 3. After that, use start-backend-pipeline-gui.cmd to launch the pipeline backend with GUI.
 4. Open the GLM Coding page from your normal browser session.
+
+macOS:
+1. Run chmod +x one-click-start.command start-backend-pipeline-gui.command scripts/setup_backend_macos.sh if Finder blocks the scripts.
+2. Double-click one-click-start.command on first run, then use start-backend-pipeline-gui.command.
 
 This package includes local model/cache files, but it does not ship a copied Windows venv.
 Copied venvs are not portable and may point at the packager's Python path.
