@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         智谱 GLM Coding Plan 抢购助手 + 本地 OCR 自动验证码
 // @namespace    http://tampermonkey.net/
-// @version      22.3
+// @version      22.4
 // @description  GLM Coding Rush / 智谱 GLM Coding Plan 抢购助手，一键抢购油猴脚本 / Tampermonkey userscript，配合本地 CPU/GPU OCR 自动识别中文点选验证码并点击，支持多窗口并发、限流重试和支付页安全保护
 // @author       mumumi
 // @include      https://*bigmodel.cn/glm-coding*
@@ -266,10 +266,20 @@
     document.documentElement.dataset.glmHelper = '1';
     // ── 最早读配置（document-start 时还没有主流程）──────────────────────────
     const EARLY_STORAGE_KEY = 'glm_coding_config_v5';
-    const SAFE_DEFAULTS_VERSION = 2;
+    const SAFE_DEFAULTS_VERSION = 3;
     const _ec = (() => { try { return JSON.parse(GM_getValue(EARLY_STORAGE_KEY, '{}')); } catch { return {}; } })();
     if (_ec.SAFE_DEFAULTS_VERSION !== SAFE_DEFAULTS_VERSION) {
         _ec.AUTO_CLOSE_INVALID = false;
+        const oldRushTarget = (_ec.RUSH_TARGET_HOUR == null && _ec.RUSH_TARGET_MIN == null && _ec.RUSH_TARGET_SEC == null) ||
+            (Number(_ec.RUSH_TARGET_HOUR) === 9 && Number(_ec.RUSH_TARGET_MIN) === 59 && Number(_ec.RUSH_TARGET_SEC) === 58);
+        if (oldRushTarget) {
+            _ec.RUSH_TARGET_HOUR = 10;
+            _ec.RUSH_TARGET_MIN = 0;
+            _ec.RUSH_TARGET_SEC = 0;
+        }
+        if (_ec.RUSH_RELEASE_ADVANCE_MS == null || Number(_ec.RUSH_RELEASE_ADVANCE_MS) === 40) {
+            _ec.RUSH_RELEASE_ADVANCE_MS = 0;
+        }
         _ec.SAFE_DEFAULTS_VERSION = SAFE_DEFAULTS_VERSION;
         GM_setValue(EARLY_STORAGE_KEY, JSON.stringify(_ec));
     }
@@ -514,21 +524,26 @@
         CAPTCHA_CLICK_DELAY_MAX_MS: 400,
         CAPTCHA_CLICK_DELAY_JITTER_PERCENT: 20,
         RUSH_ENABLED        : false,
-        RUSH_TARGET_HOUR    : 9,
-        RUSH_TARGET_MIN     : 59,
-        RUSH_TARGET_SEC     : 58,
+        RUSH_TARGET_HOUR    : 10,
+        RUSH_TARGET_MIN     : 0,
+        RUSH_TARGET_SEC     : 0,
         RUSH_HOLD_WINDOW_MS : 10000,
-        RUSH_RELEASE_ADVANCE_MS: 40,
+        RUSH_RELEASE_ADVANCE_MS: 0,
     };
     function loadCfg() { try { const s = GM_getValue(STORAGE_KEY, null); return s ? { ...DEF, ...JSON.parse(s) } : { ...DEF }; } catch { return { ...DEF }; } }
     function saveCfg(c) { GM_setValue(STORAGE_KEY, JSON.stringify(c)); }
     const CFG = loadCfg();
+    const RUSH_LATENCY_KEY = 'glm_rush_latency_v1';
+    function rushNumber(value, fallback) {
+        const n = parseInt(value, 10);
+        return Number.isFinite(n) ? n : fallback;
+    }
     function getRushTargetTimestamp(now = Date.now()) {
         const target = new Date(now);
         target.setHours(
-            parseInt(CFG.RUSH_TARGET_HOUR, 10) || 9,
-            parseInt(CFG.RUSH_TARGET_MIN, 10) || 59,
-            parseInt(CFG.RUSH_TARGET_SEC, 10) || 58,
+            rushNumber(CFG.RUSH_TARGET_HOUR, 10),
+            rushNumber(CFG.RUSH_TARGET_MIN, 0),
+            rushNumber(CFG.RUSH_TARGET_SEC, 0),
             0
         );
         return target.getTime();
@@ -542,6 +557,36 @@
         if (remaining <= 0) return true;
         const holdWindow = Math.max(0, parseInt(CFG.RUSH_HOLD_WINDOW_MS, 10) || 10000);
         return remaining <= holdWindow;
+    }
+    function medianRush(values) {
+        const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+        if (!sorted.length) return null;
+        return sorted[Math.floor(sorted.length / 2)];
+    }
+    function computeRushReleaseAdvance(rttMs) {
+        const measured = Number.isFinite(rttMs) ? rttMs : 120;
+        return Math.max(40, Math.min(180, Math.round(measured / 2 + 20)));
+    }
+    async function calibrateRushLatency() {
+        if (!CFG.RUSH_ENABLED) return;
+        const samples = [];
+        const url = GLM_CODING_URL() + '&rush_probe=' + Date.now();
+        for (let i = 0; i < 3; i++) {
+            try {
+                const t0 = performance.now();
+                await fetch(url + '_' + i, { method: 'GET', credentials: 'include', cache: 'no-store' });
+                samples.push(performance.now() - t0);
+            } catch (e) {}
+            if (i < 2) await new Promise(r => setTimeout(r, 160));
+        }
+        const rtt = medianRush(samples);
+        if (rtt == null) return;
+        const manualAdvance = Math.max(0, parseInt(CFG.RUSH_RELEASE_ADVANCE_MS, 10) || 0);
+        const autoAdvance = computeRushReleaseAdvance(rtt);
+        const advance = manualAdvance > 0 ? manualAdvance : autoAdvance;
+        const payload = { rttMs: Math.round(rtt), advanceMs: advance, at: Date.now(), source: manualAdvance > 0 ? 'manual' : 'auto' };
+        GM_setValue(RUSH_LATENCY_KEY, JSON.stringify(payload));
+        console.log('[GLM] rush latency calibrated:', payload);
     }
     GM_registerMenuCommand('⚙️ 打开配置面板', openConfigPanel);
     GM_registerMenuCommand('🗑️ 清除今日套餐状态缓存', () => { localStorage.removeItem(_dsKey); alert('今日状态已清除，即将刷新。'); location.reload(); });
@@ -916,7 +961,7 @@
                 <label style="display:flex;align-items:center;cursor:pointer">
                     <input type="checkbox" id="glm-re" ${CFG.RUSH_ENABLED ? 'checked' : ''} style="margin-right:8px">
                     <span style="font-size:14px;color:#555">冲刺模式（定时确认）</span>
-                    <span title="开启后，脚本只会在目标时间前最后 10 秒内自动点击订阅，并把验证码确定卡到目标时间附近。目标窗口外不自动发起真实抢购请求。" style="margin-left:6px;cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
+                    <span title="开启后，脚本只会在目标时间前最后 10 秒内自动点击订阅，并根据实测 RTT 保守提前释放验证码确定。目标窗口外不自动发起真实抢购请求。" style="margin-left:6px;cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
                 </label>
                 <div style="display:flex;align-items:center;gap:6px;padding-left:26px">
                     <span style="font-size:13px;color:#888">目标时间</span>
@@ -961,6 +1006,7 @@
                 RUSH_TARGET_HOUR: parseInt(panel.querySelector('#glm-rh').value, 10),
                 RUSH_TARGET_MIN: parseInt(panel.querySelector('#glm-rm').value, 10),
                 RUSH_TARGET_SEC: parseInt(panel.querySelector('#glm-rs').value, 10),
+                RUSH_RELEASE_ADVANCE_MS: CFG.RUSH_RELEASE_ADVANCE_MS,
                 SAFE_DEFAULTS_VERSION,
             });
             ov.remove(); alert('已保存，即将刷新。'); location.reload();
@@ -1202,6 +1248,7 @@
         return true;
     }
     if (checkLogin()) {
+        calibrateRushLatency();
         setInterval(tick, CFG.CHECK_INTERVAL);
         const _startDOM = () => {
             setInterval(forceEnableButtons, 500);
@@ -1226,19 +1273,24 @@
             const ph = parseInt(cfg.RUSH_TARGET_HOUR, 10);
             const pm = parseInt(cfg.RUSH_TARGET_MIN, 10);
             const ps = parseInt(cfg.RUSH_TARGET_SEC, 10);
+            const manualAdvance = Math.max(0, parseInt(cfg.RUSH_RELEASE_ADVANCE_MS, 10) || 0);
+            const latencyRaw = GM_getValue('glm_rush_latency_v1', '{}');
+            const latency = JSON.parse(latencyRaw || '{}');
+            const latencyFresh = latency && Number.isFinite(Number(latency.advanceMs)) && Date.now() - Number(latency.at || 0) < 10 * 60 * 1000;
+            const releaseAdvanceMs = manualAdvance > 0 ? manualAdvance : (latencyFresh ? Math.max(40, Math.min(180, Number(latency.advanceMs))) : 80);
             return {
                 enabled: cfg.RUSH_ENABLED === true,
-                targetHour: Number.isFinite(ph) ? ph : 9,
-                targetMin: Number.isFinite(pm) ? pm : 59,
-                targetSec: Number.isFinite(ps) ? ps : 58,
+                targetHour: Number.isFinite(ph) ? ph : 10,
+                targetMin: Number.isFinite(pm) ? pm : 0,
+                targetSec: Number.isFinite(ps) ? ps : 0,
                 holdWindowMs: Math.max(0, parseInt(cfg.RUSH_HOLD_WINDOW_MS, 10) || 10000),
-                releaseAdvanceMs: Math.max(0, parseInt(cfg.RUSH_RELEASE_ADVANCE_MS, 10) || 40),
+                releaseAdvanceMs: releaseAdvanceMs,
                 staggerMs: 2000,
                 pollInterval: 50,
                 pollTimeout: 20000,
             };
         } catch {
-            return { enabled: false, targetHour: 9, targetMin: 59, targetSec: 58, holdWindowMs: 10000, releaseAdvanceMs: 40, staggerMs: 2000, pollInterval: 50, pollTimeout: 20000 };
+            return { enabled: false, targetHour: 10, targetMin: 0, targetSec: 0, holdWindowMs: 10000, releaseAdvanceMs: 80, staggerMs: 2000, pollInterval: 50, pollTimeout: 20000 };
         }
     })();
     const CAPTCHA_CFG = (() => {
