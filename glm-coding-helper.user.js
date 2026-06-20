@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         智谱 GLM Coding Plan 抢购助手 + 本地 OCR 自动验证码
 // @namespace    http://tampermonkey.net/
-// @version      22.5
+// @version      22.6
 // @description  GLM Coding Rush / 智谱 GLM Coding Plan 抢购助手，一键抢购油猴脚本 / Tampermonkey userscript，配合本地 CPU/GPU OCR 自动识别中文点选验证码并点击，支持多窗口并发、限流重试和支付页安全保护
 // @author       mumumi
 // @include      https://*bigmodel.cn/glm-coding*
@@ -45,6 +45,7 @@
     }
     function initTencentCaptchaDirectBridge() {
         const DIRECT_OCR_URL = 'http://127.0.0.1:8888/captcha_direct';
+        const RUNTIME_PAUSE_KEY = 'glm_runtime_paused_v1';
         const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
         let solving = false;
         let lastBgUrl = '';
@@ -58,6 +59,9 @@
         })();
         function log(msg) {
             console.log('[glm-captcha-direct] ' + msg);
+        }
+        function isRuntimePaused() {
+            try { return GM_getValue(RUNTIME_PAUSE_KEY, false) === true; } catch { return false; }
         }
         function visible(el) {
             if (!el) return false;
@@ -211,6 +215,7 @@
             return visible(note);
         }
         async function solveOnce() {
+            if (isRuntimePaused()) return;
             if (!captchaCfg.AUTO_CAPTCHA_CLICK) return;
             const bgEl = findBgElement();
             if (!bgEl) return;
@@ -241,7 +246,7 @@
                 await sleep(180);
             }
             await sleep(250);
-            if (captchaCfg.AUTO_CAPTCHA_CONFIRM) clickConfirm();
+            if (!isRuntimePaused() && captchaCfg.AUTO_CAPTCHA_CONFIRM) clickConfirm();
         }
         async function tick() {
             if (solving) return;
@@ -507,6 +512,7 @@
     }
     // ── 配置 ──────────────────────────────────────────────────────────────────
     const STORAGE_KEY = 'glm_coding_config_v5';
+    const RUNTIME_PAUSE_KEY = 'glm_runtime_paused_v1';
     const TABS_MAP    = { 1: '连续包月', 2: '连续包季', 3: '连续包年' };
     const PKGS_MAP    = { 1: 'Lite',    2: 'Pro',      3: 'Max'      };
     const DEF = {
@@ -533,6 +539,7 @@
     function loadCfg() { try { const s = GM_getValue(STORAGE_KEY, null); return s ? { ...DEF, ...JSON.parse(s) } : { ...DEF }; } catch { return { ...DEF }; } }
     function saveCfg(c) { GM_setValue(STORAGE_KEY, JSON.stringify(c)); }
     const CFG = loadCfg();
+    let runtimePaused = (() => { try { return GM_getValue(RUNTIME_PAUSE_KEY, false) === true; } catch { return false; } })();
     const RUSH_LATENCY_KEY = 'glm_rush_latency_v1';
     function rushNumber(value, fallback) {
         const n = parseInt(value, 10);
@@ -592,8 +599,53 @@
     GM_registerMenuCommand('⚙️ 打开配置面板', openConfigPanel);
     GM_registerMenuCommand('🗑️ 清除今日套餐状态缓存', () => { localStorage.removeItem(_dsKey); alert('今日状态已清除，即将刷新。'); location.reload(); });
     GM_registerMenuCommand('🚀 一键多开窗口', openMultipleWindows);
+    GM_registerMenuCommand('⏯️ 暂停/恢复脚本 (Alt+Shift+P)', toggleRuntimePause);
+    GM_registerMenuCommand('🖱️ 切换自动点击订阅 (Alt+Shift+A)', toggleAutoClickSub);
+    function saveRuntimeCfgPatch(patch) {
+        Object.assign(CFG, patch);
+        saveCfg({ ...CFG });
+    }
+    function setRuntimePaused(paused, source = 'hotkey') {
+        runtimePaused = paused === true;
+        GM_setValue(RUNTIME_PAUSE_KEY, runtimePaused);
+        if (runtimePaused) {
+            setBar(`⏸️ 脚本已暂停（${source}）。Alt+Shift+P 恢复。`, '#722ed1');
+        } else {
+            setBar(`▶️ 脚本已恢复（${source}）。`, '#237804');
+        }
+    }
+    function toggleRuntimePause() {
+        setRuntimePaused(!runtimePaused);
+    }
+    function toggleAutoClickSub() {
+        const next = !CFG.AUTO_CLICK_SUB;
+        saveRuntimeCfgPatch({ AUTO_CLICK_SUB: next });
+        setBar(`${next ? '✅ 已开启' : '🛑 已关闭'}自动点击订阅（Alt+Shift+A）`, next ? '#237804' : '#d46b08');
+    }
+    function isEditableHotkeyTarget(el) {
+        if (!el) return false;
+        const tag = (el.tagName || '').toLowerCase();
+        return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+    }
+    function handleControlHotkeys(e) {
+        if (!e.altKey || !e.shiftKey || e.ctrlKey || e.metaKey) return false;
+        if (isEditableHotkeyTarget(e.target)) return false;
+        const key = String(e.key || '').toLowerCase();
+        if (key === 'p') {
+            e.preventDefault();
+            toggleRuntimePause();
+            return true;
+        }
+        if (key === 'a') {
+            e.preventDefault();
+            toggleAutoClickSub();
+            return true;
+        }
+        return false;
+    }
     // ── v8.0: ESC 键快速关闭弹窗 ──────────────────────────────────────────────
     document.addEventListener('keydown', (e) => {
+        if (handleControlHotkeys(e)) return;
         if (e.key === 'Escape' || e.keyCode === 27) {
             const busyDlg = document.querySelector('.el-dialog__wrapper .empty-data-wrap');
             if (busyDlg) {
@@ -1019,6 +1071,10 @@
     // ═══════════════════════════════════════════════════════════════════════════
     function tick() {
         if (state === 'DONE') return;
+        if (runtimePaused) {
+            setBar('⏸️ 脚本已暂停。Alt+Shift+P 恢复。', '#722ed1');
+            return;
+        }
         if (window.__glmRushConfirmed && window.__glmRushDialogSeen && !getPayDialog()) {
             window.__glmRushConfirmed = 0;
             window.__glmRushDialogSeen = 0;
