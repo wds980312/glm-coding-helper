@@ -2,13 +2,40 @@
     [ValidateSet("auto", "cpu", "gpu")]
     [string]$Target = "auto",
     [int]$Port = 8888,
-    # 默认走清华镜像，避免国内用户直连 PyPI 超时。用户显式传 -PipArg 会覆盖。
-    [string[]]$PipArg = @("-i", "https://pypi.tuna.tsinghua.edu.cn/simple")
+    # 默认空数组；用户不传 -PipArg 时，运行时自动探测可用 PyPI 镜像（见 Select-PypiMirror）。
+    [string[]]$PipArg = @()
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
+
+# PyPI 镜像列表（国内优先，官方兜底）。Select-PypiMirror 会按顺序探测，选第一个可用的。
+$script:PypiMirrors = @(
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "https://mirrors.aliyun.com/pypi/simple",
+    "https://pypi.mirrors.ustc.edu.cn/simple",
+    "https://mirrors.cloud.tencent.com/pypi/simple",
+    "https://pypi.org/simple"
+)
+
+function Select-PypiMirror {
+    # 依次 HEAD 探测每个镜像，3 秒超时，返回第一个通的（含 https + simple 结尾校验）。
+    foreach ($url in $script:PypiMirrors) {
+        try {
+            $probe = Invoke-WebRequest -Uri $url -Method Head -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+            if ($probe.StatusCode -ge 200 -and $probe.StatusCode -lt 500) {
+                Write-Host "PyPI 镜像可用: $url" -ForegroundColor Green
+                return $url
+            }
+        } catch {
+            Write-Host "PyPI 镜像不可用: $url ($($_.Exception.Message -split "`n")[0])" -ForegroundColor DarkGray
+        }
+    }
+    # 全挂了，回退官方源（让 pip 自己报错，至少有明确信息）
+    Write-Host "所有镜像探测失败，回退官方源 pypi.org" -ForegroundColor Yellow
+    return "https://pypi.org/simple"
+}
 
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
@@ -151,6 +178,11 @@ $Ready = (-not $NeedsRecreate) -and (Test-PythonImports $SelectedPython $ImportC
 
 if (-not $Ready) {
     Write-Host "Backend environment is missing or incomplete (PIL/cv2/numpy etc). Installing $InstallTarget environment..."
+    # 用户没显式传 -PipArg 时，自动探测可用 PyPI 镜像（避免单源挂了导致安装失败）
+    if (-not $PipArg -or $PipArg.Count -eq 0) {
+        $mirror = Select-PypiMirror
+        $PipArg = @("-i", $mirror)
+    }
     $bootstrapExit = Invoke-Bootstrap -BootstrapTarget $InstallTarget -PythonPath $SelectedPython -ForceRecreate:$NeedsRecreate
     $SelectedPython = if ($InstallTarget -eq "gpu") { $GpuPython } else { $CpuPython }
     $Ready = Test-PythonImports $SelectedPython $ImportCode
