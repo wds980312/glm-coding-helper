@@ -753,6 +753,18 @@
         if (runtimePaused) {
             setBar(`⏸️ 脚本已暂停（${source}）。${pauseHotkey()} 恢复。`, '#722ed1');
         } else {
+            // 恢复时：如果正在 WAITING，重置 taskClickTime（让超时从恢复时刻重新算，
+            // 避免暂停期间 elapsed 虚高导致误超时）；如果 WAITING 但弹窗已不在
+            // （暂停期间被手动关了），直接回 IDLE 重试，避免干等到超时。
+            if (state === 'TASK_UNIT' && taskPhase === 'WAITING') {
+                taskClickTime = Date.now();
+                const hasModal = findRLModal() || isPayDialog() || isSuccessDialog();
+                if (!hasModal) {
+                    taskPhase = 'IDLE';
+                    setBar(`▶️ 脚本已恢复（${source}），弹窗已关，重试点订阅。`, '#237804');
+                    return;
+                }
+            }
             setBar(`▶️ 脚本已恢复（${source}）。`, '#237804');
         }
     }
