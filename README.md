@@ -110,10 +110,10 @@ Greasy Fork 和仓库根目录的 `glm-coding-helper.user.js` 都是给普通用
 Windows：
 
 ```text
-start-backend-pipeline-gui.cmd
+one-click-start.cmd
 ```
 
-首次使用如果环境没装好，先双击 `one-click-start.cmd` 在本机创建/修复环境；之后再用 `start-backend-pipeline-gui.cmd` 日常启动。
+首次双击会自动安装 CPU 环境（清华 PyPI 镜像，安装过程有实时进度），之后每次双击直接启动后端 + Tk GUI。环境损坏时也会自动检测并修复。
 
 macOS（Apple Silicon）：
 
@@ -139,7 +139,7 @@ https://www.bigmodel.cn/glm-coding
 ## 抢购步骤
 
 1. 先安装好油猴插件，配置好油猴脚本。使用 Chrome 时要在扩展页面开启开发者模式，然后找到 Tampermonkey 详情，把“允许用户脚本”“在无痕模式下启用”“允许访问文件网址”按需打开。
-2. 下载并解压 Release 包，双击 `start-backend-pipeline-gui.cmd` 启动本地后端。
+2. 下载并解压 Release 包，双击 `one-click-start.cmd` 启动本地后端。
 3. 打开 GLM Coding 页面测试脚本是否正常，脚本会自动补上内置优惠入口。
 4. 每天 9 点 30 分前进入抢购页面准备，晚了可能就打不开了。提前准备好手机支付宝付款。
 5. 多开几个窗口，等快到 10 点的时候点击好验证码但不要确定，等 10 点一到再按确定。**窗口不要开太多，最好 1-2 个，最多 2 个**（脚本弹窗上限仍为 10，按需选择）。窗口开得越多，请求数量按窗口数放大，撞 RPM 上限的概率越高，近期已有大量高并发脚本因此全轮失败。
