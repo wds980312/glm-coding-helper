@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         智谱 GLM Coding Plan 抢购助手 + 本地 OCR 自动验证码
 // @namespace    http://tampermonkey.net/
-// @version      23.3
+// @version      23.4
 // @description  GLM Coding Rush / 智谱 GLM Coding Plan 抢购助手，一键抢购油猴脚本 / Tampermonkey userscript，配合本地 CPU/GPU OCR 自动识别中文点选验证码并点击，支持多窗口并发、限流重试和支付页安全保护
 // @author       mumumi
 // @include      https://*bigmodel.cn/glm-coding*
@@ -1425,26 +1425,19 @@
             }
             const elapsed = Date.now() - taskClickTime;
             const prefix = lastCloseReason ? `${lastCloseReason} → ` : '';
-            // 用"iframe 是否拿到新 prompt+图"判断本次点击有没有触发验证码。
-            // iframe 拿到新验证码（prompt 或背景图变化）时会让 GM 计数器 glm_captcha_seen_seq +1。
-            // 计数器只增不减、永不残留，比较"是否增长"即可，无需清零。
-            let captchaSeqNow = 0;
-            try { captchaSeqNow = GM_getValue('glm_captcha_seen_seq', 0) | 0; } catch (e) {}
-            const captchaSeen = captchaSeqNow > taskClickCaptchaSeq;  // 比点击时增长了 = 本次触发的验证码已弹出
-            if (captchaSeen) {
-                // 验证码已弹出且 prompt+图已拿到，OCR/点字/确定进行中（实测从不失误），耐心等
-                setBar(`${prefix}🔐 ${TABS_MAP[tab]}·${PKGS_MAP[pkg]} 验证码识别中... (${(elapsed/1000).toFixed(1)}s)`, '#1677ff');
-                if (elapsed > 30000) {
-                    if (isSoldOut(b)) exitTask(); else taskPhase = 'IDLE';
-                }
-            } else if (elapsed > 1500) {
-                // 点击后 1.5 秒还没拿到新验证码 = 点击没触发验证码弹窗（合成事件被吞/按钮未真正就绪），立即重试点订阅
-                setBar(`⚡ ${TABS_MAP[tab]}·${PKGS_MAP[pkg]} 点击未弹验证码，重试...`, '#d4380d');
-                taskPhase = 'IDLE';
-            } else if (PS.inProgress) {
+            // 极简逻辑：点击后只等 preview 响应（PS.result 被设置）或弹窗出现。
+            // 不判断验证码/prompt 状态——那些和主流程无关，识别完会自然推动 preview。
+            // 5 秒内没有任何结果（preview 没回/弹窗没出）= 卡住了，立即重试点订阅。
+            if (PS.inProgress) {
                 setBar(`${prefix}⏳ ${TABS_MAP[tab]}·${PKGS_MAP[pkg]} 接口请求中... (${(elapsed/1000).toFixed(1)}s)`, '#1677ff');
             } else {
-                setBar(`${prefix}🔐 ${TABS_MAP[tab]}·${PKGS_MAP[pkg]} 等待验证码... (${(elapsed/1000).toFixed(1)}s)`, '#1677ff');
+                setBar(`${prefix}🔐 ${TABS_MAP[tab]}·${PKGS_MAP[pkg]} 等待响应... (${(elapsed/1000).toFixed(1)}s)`, '#1677ff');
+            }
+            if (elapsed > 10000) {
+                // 10 秒没结果 = 卡住（验证码没弹/没识别完/被拦），重试点订阅。
+                // 10 秒兜底：正常识别（含老 CPU）5-8 秒够，超 10 秒就是卡了。
+                setBar(`⚡ ${TABS_MAP[tab]}·${PKGS_MAP[pkg]} 超时，重试点订阅...`, '#d4380d');
+                taskPhase = 'IDLE';
             }
         }
     }
