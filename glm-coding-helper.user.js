@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         智谱 GLM Coding Plan 抢购助手 + 本地 OCR 自动验证码
 // @namespace    http://tampermonkey.net/
-// @version      23.5
+// @version      23.6
 // @description  GLM Coding Rush / 智谱 GLM Coding Plan 抢购助手，一键抢购油猴脚本 / Tampermonkey userscript，配合本地 CPU/GPU OCR（PP-OCRv6）自动识别中文点选验证码并点击，支持多窗口并发、限流重试和支付页安全保护。订阅入口被风控拦截时手动点「特惠订阅」即可，验证码自动打。
 // @author       mumumi
 // @include      https://*bigmodel.cn/glm-coding*
@@ -919,8 +919,8 @@
     // ── DOM 访问 ──────────────────────────────────────────────────────────────
     const tabEl     = n => document.querySelectorAll('#switchTabBox .switch-tab-item')[n - 1];
     const btnEl     = n => document.querySelector(`.glm-coding-package-list > div:nth-child(${n}) > div > .package-card-btn-box > button`);
-    const canBuy    = b => b && !b.disabled && !b.classList.contains('is-disabled') && !b.classList.contains('disabled') && !/售罄|补货|暂时/.test(b.innerText || '');
-    const isSoldOut = b => /售罄|补货|暂时/.test(b?.innerText || '');
+    const canBuy    = b => b && !b.disabled && !b.classList.contains('is-disabled') && !b.classList.contains('disabled') && !/售罄|补货|暂时|抢购人数过多|刷新再试|请稍后/.test(b.innerText || '');
+    const isSoldOut = b => /售罄|补货|暂时|抢购人数过多|刷新再试|请稍后/.test(b?.innerText || '');
     const isBusy    = b => /抢购人数过多|请刷新/.test(b?.innerText || '');
     // ── 弹窗检测 ──────────────────────────────────────────────────────────────
     function findRLModal() {

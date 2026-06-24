@@ -1,5 +1,12 @@
 # 修复历史
 
+## 2026-06-24
+
+- 发布用户脚本 v23.6：识别「抢购人数过多，请刷新再试」按钮状态为不可点击。之前 `canBuy` 只拦截「售罄/补货/暂时」，按钮显示「抢购人数过多」「刷新再试」「请稍后」时仍会误判可点击并尝试点击，浪费请求。现在这些文字都加入拦截正则，看到就跳过继续等，不浪费点击。（#32）
+- 修复 macOS/Linux 发布包 shell 脚本 CRLF 导致 `/bin/bash^M` 错误（#33）：加 `.gitattributes` 强制 `*.sh`/`*.command` 为 LF，打包脚本双保险（打包时强制 CRLF→LF）。
+- 补充 macOS 安装文档 tkinter 说明：Homebrew Python 默认不带 tkinter，需 `brew install python-tk@3.12`；或用 python.org 官方安装包（自带 tkinter）。
+- 新增 Linux 一键启动支持（PR #34）：`one-click-start.sh` + `scripts/setup_backend_linux.sh` + `scripts/pypi_mirror.sh`，复用 5 源镜像探测。
+
 ## 2026-06-23
 
 - 发布用户脚本 v23.5：新增「首击前延时」配置。PP-OCRv6 识别太快（几十 ms），识别完瞬间点第一个字时验证码 DOM 可能还没完全渲染/动画到位，导致第一击落空。之前点击间延时只加在字与字之间，第一击前零等待。现在加可配置的首击前随机延时（默认 150-300ms），在配置面板「验证码点字延时策略」下方新增「首击前延时」最小/最大输入框，设为 0 则不等。
