@@ -59,6 +59,14 @@ PORT = BACKEND_CONFIG.port
 # 这些目录是调试用途，对识别功能无影响，老图定期清掉即可。
 DEBUG_KEEP_FILES = 60          # debug_captcha_direct 保留最近 60 张原图
 AUTO_CAPTURE_KEEP_FILES = 120  # auto_captured 保留最近 120 张截图
+# 运行时同样会滚动的目录：启动时直接清空（重启即放弃上次的调试图，留着没用）。
+# 注意 _warmup.png 是预热用的兜底图，需保留。
+STARTUP_PURGE_DIRS = [
+    ROOT / "dataset" / "debug_captcha_direct",
+    ROOT / "dataset" / "auto_captured",
+    ROOT / "logs" / "ppocr_live_crops",
+]
+STARTUP_PURGE_KEEP = {"_warmup.png"}
 
 def prune_dir(directory: Path, keep: int, suffix: str = ".png") -> None:
     """保留目录里最近修改的 keep 个文件，删除更老的。静默失败。"""
@@ -80,6 +88,29 @@ def prune_dir(directory: Path, keep: int, suffix: str = ".png") -> None:
             log_to_gui(f"[清理] {directory.name}: 删除 {removed} 个旧文件，保留 {keep} 个")
     except Exception:
         pass
+
+def purge_debug_dirs_on_startup() -> None:
+    """启动时清空调试目录里的旧图（重启即放弃上次的调试图，留着占盘没用）。
+    保留 STARTUP_PURGE_KEEP 里的文件（如 _warmup.png）。静默失败。"""
+    total = 0
+    for d in STARTUP_PURGE_DIRS:
+        try:
+            if not d.exists():
+                continue
+            for p in d.iterdir():
+                if not p.is_file():
+                    continue
+                if p.name in STARTUP_PURGE_KEEP:
+                    continue
+                try:
+                    p.unlink()
+                    total += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    if total:
+        print(f"[启动] 清理上次调试图 {total} 个", flush=True)
 
 
 class AppState:
@@ -589,6 +620,7 @@ class CaptchaHandler(BaseHTTPRequestHandler):
 def run_gui():
     if tk is None or ttk is None:
         raise RuntimeError("Tk is unavailable; install Tk support or use --headless")
+    purge_debug_dirs_on_startup()
     root = tk.Tk()
     root.title("Captcha Server v2 - Auto Rush Mode")
     root.geometry("620x380")
