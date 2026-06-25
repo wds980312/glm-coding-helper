@@ -59,7 +59,7 @@ if ! "$VENV_PY" -c "import tkinter" >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! "$VENV_PY" -c "import fastapi, uvicorn, psutil, ultralytics, paddleocr, paddlex, paddle, cv2, PIL, numpy" >/dev/null 2>&1; then
+if ! "$VENV_PY" "$SCRIPT_DIR/scripts/check_backend_env.py" >/dev/null 2>&1; then
     echo ""
     echo "[错误] 后端环境不完整，请重新运行 one-click-start.command。" >&2
     read -r -p "按回车键退出..."
